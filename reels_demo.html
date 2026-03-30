@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>TikTok风格短视频滑动演示</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+        body {
+            background: black;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+        }
+        /* 滑动容器 */
+        .video-swiper {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            touch-action: pan-y pinch-zoom; /* 允许垂直滑动，但我们会手动处理 */
+        }
+        .video-wrapper {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            will-change: transform;
+            transition: transform 0s linear; /* 初始无过渡，由JS控制 */
+        }
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            background: black;
+            display: block;
+        }
+        .info {
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            color: white;
+            background: rgba(0,0,0,0.5);
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 14px;
+            z-index: 100;
+            backdrop-filter: blur(5px);
+            pointer-events: none;
+        }
+        .upload-btn {
+            position: fixed;
+            bottom: 30px;
+            right: 20px;
+            background: rgba(0,0,0,0.6);
+            color: white;
+            padding: 12px 20px;
+            border-radius: 40px;
+            font-size: 16px;
+            font-weight: 500;
+            z-index: 200;
+            backdrop-filter: blur(8px);
+            cursor: pointer;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+            transition: transform 0.2s;
+        }
+        .upload-btn:active {
+            transform: scale(0.95);
+        }
+        .upload-input {
+            display: none;
+        }
+        .toast {
+            position: fixed;
+            bottom: 100px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 30px;
+            font-size: 14px;
+            z-index: 300;
+            backdrop-filter: blur(5px);
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+    </style>
+</head>
+<body>
+    <div class="video-swiper" id="videoSwiper">
+        <div class="video-wrapper" id="videoWrapper">
+            <video id="currentVideo" autoplay muted playsinline></video>
+        </div>
+    </div>
+    <div class="info" id="videoIndexInfo">1 / 0</div>
+    <div class="upload-btn" id="uploadBtn">📤 上传视频</div>
+    <input type="file" id="uploadInput" class="upload-input" accept="video/*">
+    <div id="toastMsg" class="toast"></div>
+
+    <script>
+        // ---------- 视频列表 ----------
+        let videos = [
+            "https://www.w3schools.com/html/mov_bbb.mp4",
+            "https://www.w3schools.com/html/movie.mp4",
+            "https://sample-videos.com/video123/mp4/720/big_buck_bunny_720p_1mb.mp4"
+        ];
+        let currentIndex = 0;
+        let isAnimating = false;      // 是否正在执行切换/回弹动画
+        let startY = 0;
+        let currentTranslateY = 0;
+        let wrapperHeight = 0;
+
+        const videoSwiper = document.getElementById('videoSwiper');
+        const videoWrapper = document.getElementById('videoWrapper');
+        const videoElement = document.getElementById('currentVideo');
+        const infoDiv = document.getElementById('videoIndexInfo');
+        const uploadBtn = document.getElementById('uploadBtn');
+        const uploadInput = document.getElementById('uploadInput');
+        const toast = document.getElementById('toastMsg');
+
+        // 辅助函数：显示提示
+        function showToast(msg, duration = 2000) {
+            toast.textContent = msg;
+            toast.style.opacity = '1';
+            setTimeout(() => {
+                toast.style.opacity = '0';
+            }, duration);
+        }
+
+        // 更新当前视频
+        function updateVideo(index) {
+            if (videos.length === 0) {
+                videoElement.src = '';
+                infoDiv.innerText = '0 / 0';
+                return;
+            }
+            let url = videos[index];
+            videoElement.src = url;
+            videoElement.load();
+            videoElement.play().catch(e => console.log("自动播放被阻止", e));
+            infoDiv.innerText = `${index+1} / ${videos.length}`;
+        }
+
+        // 刷新列表（例如上传后）
+        function refreshDisplay() {
+            if (currentIndex >= videos.length) currentIndex = Math.max(0, videos.length - 1);
+            updateVideo(currentIndex);
+        }
+
+        // 执行平滑移动动画
+        function animateTo(translateY, duration, callback) {
+            videoWrapper.style.transition = `transform ${duration}ms cubic-bezier(0.2, 0.9, 0.4, 1.1)`;
+            videoWrapper.style.transform = `translateY(${translateY}px)`;
+            setTimeout(() => {
+                videoWrapper.style.transition = ''; // 清除过渡
+                if (callback) callback();
+            }, duration);
+        }
+
+        // 回弹到原位
+        function bounceBack() {
+            if (isAnimating) return;
+            isAnimating = true;
+            animateTo(0, 200, () => {
+                currentTranslateY = 0;
+                isAnimating = false;
+            });
+        }
+
+        // 切换视频（方向：-1 上一个，1 下一个）
+        function switchVideo(direction) {
+            if (videos.length === 0) return;
+            let newIndex = currentIndex + direction;
+            if (newIndex < 0) newIndex = videos.length - 1;
+            if (newIndex >= videos.length) newIndex = 0;
+            if (newIndex === currentIndex) {
+                // 没有变化，但可能因为边界导致，直接回弹
+                bounceBack();
+                return;
+            }
+
+            // 计算出目标偏移量（整个屏幕高度）
+            const offset = direction === 1 ? -wrapperHeight : wrapperHeight;
+            // 先移动出屏幕
+            animateTo(offset, 250, () => {
+                // 更新视频内容
+                currentIndex = newIndex;
+                updateVideo(currentIndex);
+                // 重置位置（瞬间移回，无动画）
+                videoWrapper.style.transition = 'none';
+                videoWrapper.style.transform = 'translateY(0)';
+                // 强制重绘，确保下一帧动画正常
+                videoWrapper.offsetHeight;
+                videoWrapper.style.transition = '';
+                currentTranslateY = 0;
+                isAnimating = false;
+            });
+        }
+
+        // ---------- 触摸滑动逻辑 ----------
+        videoSwiper.addEventListener('touchstart', (e) => {
+            if (isAnimating) return;
+            startY = e.touches[0].clientY;
+            currentTranslateY = 0; // 每次滑动开始时偏移量归零
+            // 移除过渡，实现手指跟随
+            videoWrapper.style.transition = 'none';
+        });
+
+        videoSwiper.addEventListener('touchmove', (e) => {
+            if (isAnimating) return;
+            const deltaY = e.touches[0].clientY - startY;
+            // 限制最大偏移为屏幕高度
+            let translateY = deltaY;
+            if (Math.abs(translateY) > wrapperHeight) {
+                translateY = Math.sign(translateY) * wrapperHeight;
+            }
+            videoWrapper.style.transform = `translateY(${translateY}px)`;
+            currentTranslateY = translateY;
+            // 阻止页面滚动
+            e.preventDefault();
+        });
+
+        videoSwiper.addEventListener('touchend', (e) => {
+            if (isAnimating) return;
+            const threshold = wrapperHeight * 0.25; // 阈值：屏幕高度的1/4
+            if (Math.abs(currentTranslateY) > threshold) {
+                // 切换视频
+                isAnimating = true;
+                const direction = currentTranslateY > 0 ? -1 : 1; // 向下滑动>0 是上一个；向上滑动<0 是下一个
+                switchVideo(direction);
+            } else {
+                // 回弹
+                bounceBack();
+            }
+        });
+
+        // 禁用鼠标拖拽滚动（可选）
+        videoSwiper.addEventListener('mousedown', (e) => {
+            if (isAnimating) return;
+            e.preventDefault();
+            let mouseStartY = e.clientY;
+            let mouseDeltaY = 0;
+            const onMouseMove = (moveEvent) => {
+                if (isAnimating) return;
+                mouseDeltaY = moveEvent.clientY - mouseStartY;
+                let translateY = mouseDeltaY;
+                if (Math.abs(translateY) > wrapperHeight) {
+                    translateY = Math.sign(translateY) * wrapperHeight;
+                }
+                videoWrapper.style.transition = 'none';
+                videoWrapper.style.transform = `translateY(${translateY}px)`;
+                currentTranslateY = translateY;
+            };
+            const onMouseUp = () => {
+                document.removeEventListener('mousemove', onMouseMove);
+                document.removeEventListener('mouseup', onMouseUp);
+                const threshold = wrapperHeight * 0.25;
+                if (Math.abs(currentTranslateY) > threshold) {
+                    isAnimating = true;
+                    const direction = currentTranslateY > 0 ? -1 : 1;
+                    switchVideo(direction);
+                } else {
+                    bounceBack();
+                }
+            };
+            document.addEventListener('mousemove', onMouseMove);
+            document.addEventListener('mouseup', onMouseUp);
+        });
+
+        // 上传视频
+        uploadBtn.addEventListener('click', () => {
+            uploadInput.click();
+        });
+
+        uploadInput.addEventListener('change', (event) => {
+            const file = event.target.files[0];
+            if (!file) return;
+            if (!file.type.startsWith('video/')) {
+                showToast('请选择视频文件');
+                return;
+            }
+            const blobUrl = URL.createObjectURL(file);
+            videos.push(blobUrl);
+            currentIndex = videos.length - 1;
+            updateVideo(currentIndex);
+            showToast('上传成功！');
+            uploadInput.value = '';
+        });
+
+        // 初始化
+        function init() {
+            wrapperHeight = window.innerHeight;
+            if (videos.length > 0) {
+                updateVideo(0);
+            } else {
+                infoDiv.innerText = "0 / 0";
+            }
+            videoWrapper.style.transform = 'translateY(0)';
+        }
+
+        // 监听窗口大小变化，重新计算高度
+        window.addEventListener('resize', () => {
+            wrapperHeight = window.innerHeight;
+        });
+
+        init();
+
+        // 页面可见性变化时恢复播放
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden && videoElement.src) {
+                videoElement.play().catch(e => console.log);
+            }
+        });
+    </script>
+</body>
+</html>
